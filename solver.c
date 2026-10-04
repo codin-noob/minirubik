@@ -24,6 +24,60 @@ typedef struct {
        state->o[4] + state->o[5] + state->o[6]) % 3 == 0;
  */
 
+/* new small number divmod for RV32I */
+static uint32_t divmod_small(uint32_t value, uint32_t divisor, uint32_t *rem_out){
+    uint32_t quotient = 0;
+    while (value >= divisor){
+    	value -= divisor;
+	quotient += 1U;
+    }
+    *rem_out = value;
+    return quotient;
+}
+
+
+/* new div ORIENTATION for RV32I */
+static uint32_t div729(uint32_t value, uint32_t *rem_out){
+    uint32_t quotient = 0;
+    for (int shift = 12; shift >= 0; --shift){
+    	uint32_t d = 729U << shift;
+	if (value >= d){
+	    value -= d;
+	    quotient += (1U << shift);
+	}
+    }
+    *rem_out = value;
+    return quotient;
+}
+
+/* new mul ORIENTATION for RV32I */
+static uint32_t mul729(uint32_t value){
+    return (value << 9) + (value << 7) + (value << 6) + (value << 4) + (value << 3) + value;
+}
+
+/* new mul for RV32I */
+static uint32_t mul_small(uint32_t value, uint32_t multiplier){
+    uint32_t result = 0;
+    for (uint32_t i = 0; i < multiplier; i++)
+    	result += value;
+    return result;
+}
+
+/* new modulo3 for RV32I */
+static uint32_t divmod3(uint32_t value, uint32_t *rem_out)
+{
+    uint32_t quotient = 0;
+    while (value >= 3U) {
+        value -= 3U;
+        quotient += 1U;
+    }
+    *rem_out = value;
+    return quotient;
+}
+
+/* factorial of 0 ~ 6 */
+static const uint32_t PERM_RADIX[7] = {720, 120, 24, 6, 2, 1, 1};
+
 static const char *const move_names[MOVES] = {"R",  "R2", "R'", "B", "B2",
                                               "B'", "D",  "D2", "D'"};
 static const uint8_t inverse_move[MOVES] = {2, 1, 0, 5, 4, 3, 8, 7, 6};
@@ -105,7 +159,7 @@ static uint32_t rank_state(const state_t *state)
         for (uint8_t j = (uint8_t) (i + 1U); j < CUBIES; ++j)
             if (state->p[j] < state->p[i])
                 ++smaller;
-        p = p * (CUBIES - i) + smaller;
+        p = mul_small(p, (CUBIES - i)) + smaller;
     }
     /*@ loop invariant 0 <= i <= 6;
         loop invariant (i == 0 ==> o == 0) && (i == 1 ==> o < 3) &&
@@ -116,29 +170,31 @@ static uint32_t rank_state(const state_t *state)
         loop variant 6 - i;
      */
     for (uint8_t i = 0; i < 6; ++i)
-        o = o * 3U + state->o[i];
-    return p * ORIENTATIONS + o;
+        o = (o << 1) + o + state->o[i];
+    return mul729(p) + o;
 }
 
 /*@ requires \valid(state); requires rank < STATES; assigns *state; */
 static void unrank_state(uint32_t rank, state_t *state)
 {
     uint8_t available[CUBIES] = {0, 1, 2, 3, 4, 5, 6};
-    uint32_t p = rank / ORIENTATIONS, o = rank % ORIENTATIONS, f = 720;
+    uint32_t o;
+    uint32_t p = div729(rank, &o);
     uint8_t sum = 0;
+
     for (uint8_t i = 0; i < CUBIES; ++i) {
-        uint8_t q = (uint8_t) (p / f);
-        p %= f;
+	uint32_t rem;
+        uint8_t q = (uint8_t) divmod_small(p, PERM_RADIX[i], &rem);
+	p = rem;
         state->p[i] = available[q];
         for (uint8_t j = q; j + 1U < CUBIES - i; ++j)
             available[j] = available[j + 1U];
-        if (i < 5)
-            f /= 6U - i;
     }
     for (uint8_t i = 6; i-- > 0;) {
-        state->o[i] = (uint8_t) (o % 3U);
-        sum = (uint8_t) (sum + state->o[i]);
-        o /= 3U;
+        uint32_t rem;
+	o = divmod3(o, &rem);
+	state->o[i] = (uint8_t) rem;
+	sum = (uint8_t) (sum + rem);
     }
     state->o[6] = (uint8_t) ((3U - sum % 3U) % 3U);
 }
