@@ -41,6 +41,10 @@ static const uint8_t twist[3][CUBIES] = {
     {0, 0, 0, 0, 0, 0, 0},
 };
 
+/* new arithmetic method for moves */
+static const uint8_t MOVE_FACE[MOVES] = {0, 0, 0, 1, 1, 1, 2, 2, 2};
+static const uint8_t MOVE_TURNS[MOVES] = {1, 2, 3, 1, 2, 3, 1, 2, 3};
+
 /* The three quarter-turns preserve the fixed front-upper-left corner. */
 /*@ requires face < 3;
     assigns \nothing;
@@ -488,6 +492,27 @@ int main(int argc, char **argv)
         }
         puts("3674160 states; diameter 11");
         return output_failed();
+    }
+    if (argc == 3 && !strcmp(argv[1], "--ida")) {
+        if (!parse_state(argv[2], &state)) {
+            fprintf(stderr, "usage: %s --ida PPPPPPPOOOOOOO\n",
+                    argc > 0 && argv[0] ? argv[0] : "solver");
+            return 2;
+        }
+        uint8_t path[MAX_DEPTH];
+        int path_len;
+        int threshold = ida_search(state, path, &path_len);
+        if (threshold < 0) {
+            fputs("ida_search: no solution found within MAX_DEPTH\n", stderr);
+            return 1;
+        }
+        const char *separator = "";
+        for (int i = 0; i < path_len; ++i) {
+            printf("%s%s", separator, move_names[path[i]]);
+            separator = " ";
+        }
+        putchar('\n');
+        return 0;
     }
     if (argc != 2 || !parse_state(argv[1], &state)) {
         /* C99 5.1.2.2.1 lets argv[0] be null when argc is 0. */
