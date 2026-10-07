@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MAX_DEPTH 16
+
 enum {
     CUBIES = 7,
     PERMUTATIONS = 5040,
@@ -23,60 +25,6 @@ typedef struct {
       (state->o[0] + state->o[1] + state->o[2] + state->o[3] +
        state->o[4] + state->o[5] + state->o[6]) % 3 == 0;
  */
-
-/* new small number divmod for RV32I */
-static uint32_t divmod_small(uint32_t value, uint32_t divisor, uint32_t *rem_out){
-    uint32_t quotient = 0;
-    while (value >= divisor){
-    	value -= divisor;
-	quotient += 1U;
-    }
-    *rem_out = value;
-    return quotient;
-}
-
-
-/* new div ORIENTATION for RV32I */
-static uint32_t div729(uint32_t value, uint32_t *rem_out){
-    uint32_t quotient = 0;
-    for (int shift = 12; shift >= 0; --shift){
-    	uint32_t d = 729U << shift;
-	if (value >= d){
-	    value -= d;
-	    quotient += (1U << shift);
-	}
-    }
-    *rem_out = value;
-    return quotient;
-}
-
-/* new mul ORIENTATION for RV32I */
-static uint32_t mul729(uint32_t value){
-    return (value << 9) + (value << 7) + (value << 6) + (value << 4) + (value << 3) + value;
-}
-
-/* new mul for RV32I */
-static uint32_t mul_small(uint32_t value, uint32_t multiplier){
-    uint32_t result = 0;
-    for (uint32_t i = 0; i < multiplier; i++)
-    	result += value;
-    return result;
-}
-
-/* new modulo3 for RV32I */
-static uint32_t divmod3(uint32_t value, uint32_t *rem_out)
-{
-    uint32_t quotient = 0;
-    while (value >= 3U) {
-        value -= 3U;
-        quotient += 1U;
-    }
-    *rem_out = value;
-    return quotient;
-}
-
-/* factorial of 0 ~ 6 */
-static const uint32_t PERM_RADIX[7] = {720, 120, 24, 6, 2, 1, 1};
 
 static const char *const move_names[MOVES] = {"R",  "R2", "R'", "B", "B2",
                                               "B'", "D",  "D2", "D'"};
@@ -122,11 +70,157 @@ static state_t quarter_turn(state_t state, uint8_t face)
 
 static state_t apply_move(state_t state, uint8_t move)
 {
-    uint8_t turns = (uint8_t) (move % 3U + 1U);
+    uint8_t turns = MOVE_TURNS[move];
+    uint8_t face = MOVE_FACE[move];
     for (uint8_t i = 0; i < turns; ++i)
-        state = quarter_turn(state, (uint8_t) (move / 3U));
+        state = quarter_turn(state, face);
     return state;
 }
+
+static int heuristic_value(const state_t *state)
+{
+    int perm_wrong = 0, orient_wrong = 0;
+    for (int i = 0; i < CUBIES; ++i) {
+        if (state->p[i] != i) ++perm_wrong;
+        if (state->o[i] != 0) ++orient_wrong;
+    }
+    int hp = (perm_wrong + 3) >> 2;
+    int ho = (orient_wrong + 3) >> 2;
+    return hp > ho ? hp : ho;
+}
+
+static int is_solved(const state_t *state)
+{
+    for (int i = 0; i < CUBIES; ++i)
+        if (state->p[i] != i || state->o[i] != 0)
+            return 0;
+    return 1;
+}
+
+/* recursion type DFS */
+typedef struct {
+    state_t state;
+    uint8_t move;
+    uint8_t last_face;
+    uint8_t h;
+} stack_frame;
+
+static int ida_search(state_t start, uint8_t *path, int *path_len)
+{
+    static stack_frame stack[MAX_DEPTH];
+    int threshold = heuristic_value(&start);
+
+    for (;;) {
+        int depth = 0;
+        int min_exceed = 0x7fffffff;
+        int node_is_new = 1;
+
+        stack[0].state = start;
+        stack[0].move = 0;
+        stack[0].last_face = 0xFF;
+        stack[0].h = heuristic_value(&stack[0].state);
+
+        while (depth >= 0) {
+            stack_frame *frame = &stack[depth];
+
+            if (node_is_new) {
+                int f = depth + frame->h;
+                if (is_solved(&frame->state)) {
+                    *path_len = depth;
+                    return threshold;
+                }
+                if (f > threshold) {
+                    if (f < min_exceed) min_exceed = f;
+                    depth--;
+                    node_is_new = 0;
+                    continue;
+                }
+                node_is_new = 0;
+            }
+
+            if (frame->move >= MOVES) {
+                depth--;
+                node_is_new = 0;
+                continue;
+            }
+
+            uint8_t move = frame->move++;
+            uint8_t face = MOVE_FACE[move];
+            if (face == frame->last_face)
+                continue;
+
+            stack_frame *child = &stack[depth + 1];
+            child->state = apply_move(frame->state, move);
+            child->move = 0;
+            child->last_face = face;
+            child->h = heuristic_value(&child->state);
+            path[depth] = move;
+            depth++;
+            node_is_new = 1;
+        }
+
+        if (min_exceed == 0x7fffffff)
+            return -1;
+        threshold = min_exceed;
+    }
+}
+
+/* new small number divmod for RV32I */
+static uint32_t divmod_small(uint32_t value, uint32_t divisor, uint32_t *rem_out)
+{
+    uint32_t quotient = 0;
+    while (value >= divisor) {
+        value -= divisor;
+        quotient += 1U;
+    }
+    *rem_out = value;
+    return quotient;
+}
+
+/* new div ORIENTATION for RV32I */
+static uint32_t div729(uint32_t value, uint32_t *rem_out)
+{
+    uint32_t quotient = 0;
+    for (int shift = 12; shift >= 0; --shift) {
+        uint32_t d = 729U << shift;
+        if (value >= d) {
+            value -= d;
+            quotient += (1U << shift);
+        }
+    }
+    *rem_out = value;
+    return quotient;
+}
+
+/* new mul ORIENTATION for RV32I */
+static uint32_t mul729(uint32_t value)
+{
+    return (value << 9) + (value << 7) + (value << 6) + (value << 4) + (value << 3) + value;
+}
+
+/* new mul for RV32I */
+static uint32_t mul_small(uint32_t value, uint32_t multiplier)
+{
+    uint32_t result = 0;
+    for (uint32_t i = 0; i < multiplier; i++)
+        result += value;
+    return result;
+}
+
+/* new modulo3 for RV32I */
+static uint32_t divmod3(uint32_t value, uint32_t *rem_out)
+{
+    uint32_t quotient = 0;
+    while (value >= 3U) {
+        value -= 3U;
+        quotient += 1U;
+    }
+    *rem_out = value;
+    return quotient;
+}
+
+/* factorial of 0 ~ 6 */
+static const uint32_t PERM_RADIX[7] = {720, 120, 24, 6, 2, 1, 1};
 
 /*@ requires \valid_read(state);
     requires \forall integer i; 0 <= i < CUBIES ==>
